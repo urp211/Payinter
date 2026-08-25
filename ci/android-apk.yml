@@ -1,0 +1,119 @@
+# =============================================================================
+# PayInter Android APK build — GitHub Actions
+#
+# HOW TO ENABLE (one-time, ~60 segundos):
+#   1. No GitHub, abra o repo PayInter → Add file → Upload files.
+#   2. Envie ESTE arquivo como `.github/workflows/android-apk.yml`
+#      (a pasta + nome importam!). Ou: no editor do GitHub, crie o arquivo
+#      `.github/workflows/android-apk.yml` e cole este conteúdo.
+#   3. Commit direto na branch main ou arena/01a038be-payinter.
+#
+# Depois disso: Actions → "Build Android APK" → Run workflow.
+# O APK sai como artefato "payinter-release-apk" e na GitHub Release "apk-latest".
+#
+# (Fica fora de .github/workflows de propósito: o app-token da plataforma não
+#  tem permissão `workflows`, então quem autoriza GitHub Apps é o dono do repo.)
+# =============================================================================
+
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      apiUrl:
+        description: 'Backend API URL baked into the release APK'
+        required: false
+        default: ''
+
+env:
+  API_URL: ${{ github.event.inputs.apiUrl }}
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        working-directory: mobile
+        run: npm ci --no-audit --no-fund
+
+      - name: Point app at API (optional)
+        if: env.API_URL != ''
+        run: printf "export const BUILD_API_URL = '%s';\n" "$API_URL" > mobile/src/config.ts
+
+      - name: Generate Android project
+        working-directory: mobile
+        run: npx expo prebuild -p android --no-install
+
+      - name: Tune Gradle for CI
+        run: |
+          cat >> mobile/android/gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=1g
+          org.gradle.daemon=false
+          EOF
+
+      - name: Generate release keystore (demo)
+        working-directory: mobile/android/app
+        run: |
+          keytool -genkeypair -v -keystore payinter-release.keystore \
+            -alias payinter -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass payinter123 -keypass payinter123 \
+            -dname "CN=PayInter Demo,O=PayInter,C=AO"
+
+      - name: Wire release signing
+        run: |
+          python3 - <<'PY'
+          import re
+          p = 'mobile/android/app/build.gradle'
+          s = open(p).read()
+          if 'payinter-release.keystore' not in s:
+              s = s.replace('signingConfigs {', """signingConfigs {
+        release {
+            storeFile file('payinter-release.keystore')
+            storePassword 'payinter123'
+            keyAlias 'payinter'
+            keyPassword 'payinter123'
+        }""")
+              s = re.sub(r'(release\s*\{\s*)', r"\1\n            signingConfig signingConfigs.release", s, count=1)
+              open(p, 'w').write(s)
+          PY
+
+      - name: Build release APK
+        working-directory: mobile/android
+        run: ./gradlew assembleRelease --no-daemon --console=plain
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: payinter-release-apk
+          path: mobile/android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+
+      - name: Attach APK to GitHub Release
+        run: |
+          cp mobile/android/app/build/outputs/apk/release/app-release.apk payinter.apk
+          gh release delete -y apk-latest 2>/dev/null || true
+          git tag -f apk-latest 2>/dev/null || true
+          git push -f origin apk-latest 2>/dev/null || true
+          gh release create apk-latest payinter.apk \
+            --title "PayInter Android APK (latest)" \
+            --notes "Sandbox demo build. Backend: ${API_URL:-http://localhost:4000}. Demo login: demo@payinter.app / Demo1234! / PIN 2468"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+
+# Builds
+dist/
+build/
+.next/
+.turbo/
+
+# Env & secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Data (embedded dev database, redis dumps)
+*.pglite/
+backend/.data/
+dump.rdb
+
+# Logs
+*.log
+logs/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Coverage / test artifacts
+coverage/
+*.tsbuildinfo
+
+# Mobile
+.expo/
+*.apk
+*.aab
+ios/build/
+android/build/
+
+# PWA build output
+mobile/dist-web/
+mobile/patches/
+
+
+# Expo prebuild output (regenerado por CI/prebuild)
+mobile/android/
+mobile/ios/
