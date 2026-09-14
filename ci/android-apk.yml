@@ -4,15 +4,17 @@
 # HOW TO ENABLE (one-time, ~60 segundos):
 #   1. No GitHub, abra o repo PayInter → Add file → Upload files.
 #   2. Envie ESTE arquivo como `.github/workflows/android-apk.yml`
-#      (a pasta + nome importam!). Ou: no editor do GitHub, crie o arquivo
+#      (a pasta + o nome importam!). Ou: no editor do GitHub, crie o arquivo
 #      `.github/workflows/android-apk.yml` e cole este conteúdo.
 #   3. Commit direto na branch main ou arena/01a038be-payinter.
 #
-# Depois disso: Actions → "Build Android APK" → Run workflow.
-# O APK sai como artefato "payinter-release-apk" e na GitHub Release "apk-latest".
+# Depois: Actions → "Build Android APK" → Run workflow.
+# O APK sai como artefato "payinter-debug-apk" e na GitHub Release "apk-latest".
 #
-# (Fica fora de .github/workflows de propósito: o app-token da plataforma não
-#  tem permissão `workflows`, então quem autoriza GitHub Apps é o dono do repo.)
+# A app é uma PWA (Vite + React, offline-first). O APK embrulha essa webapp com
+# Capacitor — por isso o offline-first funciona também dentro do Android.
+# Nota: com a webview no dispositivo, a API tem de ser pública/HTTPS — defina
+# `apiUrl` quando correr o workflow (opcional em dev: mesmo host da PWA).
 # =============================================================================
 
 name: Build Android APK
@@ -21,12 +23,9 @@ on:
   workflow_dispatch:
     inputs:
       apiUrl:
-        description: 'Backend API URL baked into the release APK'
+        description: 'Backend API URL baked into the APK (https origin reachable from the phone)'
         required: false
         default: ''
-
-env:
-  API_URL: ${{ github.event.inputs.apiUrl }}
 
 jobs:
   apk:
@@ -54,66 +53,40 @@ jobs:
         working-directory: mobile
         run: npm ci --no-audit --no-fund
 
-      - name: Point app at API (optional)
-        if: env.API_URL != ''
-        run: printf "export const BUILD_API_URL = '%s';\n" "$API_URL" > mobile/src/config.ts
-
-      - name: Generate Android project
+      - name: Build the offline-first PWA
         working-directory: mobile
-        run: npx expo prebuild -p android --no-install
+        env:
+          VITE_API_BASE: ${{ github.event.inputs.apiUrl }}
+        run: npm run build
 
-      - name: Tune Gradle for CI
+      - name: Add Android platform (first run only)
+        working-directory: mobile
         run: |
-          cat >> mobile/android/gradle.properties <<'EOF'
-          org.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=1g
-          org.gradle.daemon=false
-          EOF
+          if [ ! -d android ]; then npx cap add android; fi
 
-      - name: Generate release keystore (demo)
-        working-directory: mobile/android/app
-        run: |
-          keytool -genkeypair -v -keystore payinter-release.keystore \
-            -alias payinter -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass payinter123 -keypass payinter123 \
-            -dname "CN=PayInter Demo,O=PayInter,C=AO"
+      - name: Sync web bundle + manifest
+        working-directory: mobile
+        run: npx cap sync android
 
-      - name: Wire release signing
-        run: |
-          python3 - <<'PY'
-          import re
-          p = 'mobile/android/app/build.gradle'
-          s = open(p).read()
-          if 'payinter-release.keystore' not in s:
-              s = s.replace('signingConfigs {', """signingConfigs {
-        release {
-            storeFile file('payinter-release.keystore')
-            storePassword 'payinter123'
-            keyAlias 'payinter'
-            keyPassword 'payinter123'
-        }""")
-              s = re.sub(r'(release\s*\{\s*)', r"\1\n            signingConfig signingConfigs.release", s, count=1)
-              open(p, 'w').write(s)
-          PY
-
-      - name: Build release APK
+      - name: Build debug APK
         working-directory: mobile/android
-        run: ./gradlew assembleRelease --no-daemon --console=plain
+        run: ./gradlew assembleDebug --no-daemon --console=plain
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: payinter-release-apk
-          path: mobile/android/app/build/outputs/apk/release/app-release.apk
+          name: payinter-debug-apk
+          path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
       - name: Attach APK to GitHub Release
         run: |
-          cp mobile/android/app/build/outputs/apk/release/app-release.apk payinter.apk
+          cp mobile/android/app/build/outputs/apk/debug/app-debug.apk payinter.apk
           gh release delete -y apk-latest 2>/dev/null || true
           git tag -f apk-latest 2>/dev/null || true
           git push -f origin apk-latest 2>/dev/null || true
           gh release create apk-latest payinter.apk \
             --title "PayInter Android APK (latest)" \
-            --notes "Sandbox demo build. Backend: ${API_URL:-http://localhost:4000}. Demo login: demo@payinter.app / Demo1234! / PIN 2468"
+            --notes "Sandbox demo build — offline-first PWA wrapped with Capacitor. Backend: ${{ github.event.inputs.apiUrl || '(same-origin)' }}. Demo login: demo@payinter.app / Demo1234! / PIN 2468"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

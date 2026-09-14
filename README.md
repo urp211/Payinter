@@ -1,7 +1,8 @@
 # PayInter — International payments, made simple
 
-A production-shaped fintech reference: mobile wallet (iOS/Android), Node.js REST API
-with a **double-entry ledger**, and a React admin console with role-based access.
+A production-shaped fintech reference: an **offline-first installable web app** (PWA,
+also packaged as an Android APK via Capacitor), a Node.js REST API with a
+**double-entry ledger**, and a React admin console with role-based access.
 
 > **Sandbox by design.** The default deployment is clearly-labelled demo
 > infrastructure: simulated card processor, FX feed, KYC review and payouts.
@@ -16,8 +17,8 @@ cd backend && npm install && npm run dev       # → http://127.0.0.1:4000  /ops
 # 2) Admin console (proxies API calls to :4000)
 cd ../admin && npm install && npm run dev      # → http://127.0.0.1:5173
 
-# 3) Mobile app
-cd ../mobile && npm install && npm start       # → Expo Go / simulator
+# 3) Web app (offline-first PWA — installable, works without network)
+cd ../mobile && npm install && npm run dev      # → http://127.0.0.1:5173 (proxies API)
 ```
 
 Everything required for the demo seeds on first boot: currencies (USD EUR GBP CAD BRL
@@ -51,7 +52,9 @@ environment variables.
 ```
 database/   PostgreSQL migrations (the schema source of truth)
 backend/    Node.js + TypeScript API (auth, double-entry ledger, payments, admin)
-mobile/     React Native (Expo) customer app — iOS & Android
+mobile/     Offline-first web app (Vite+React PWA): service-worker app shell,
+            IndexedDB snapshot cache, outbox queue with idempotent re-sync,
+            APK packaging via Capacitor (see ci/android-apk.yml)
 admin/      React + Vite operations console (RBAC dashboards, queues, audit)
 docs/       Architecture, API overview, legal/regulatory placeholders
 tests/      (backend/tests — vitest: 52 unit + integration tests against PGlite)
@@ -71,7 +74,7 @@ tests/      (backend/tests — vitest: 52 unit + integration tests against PGlit
 
 ```bash
 cd backend && npm run test       # 52 tests: unit (ledger, money, jwt, fees) + API integration
-cd mobile && npx tsc --noEmit    # typecheck mobile
+cd mobile && npx tsc --noEmit    # typecheck web app
 cd admin && npx tsc -b --noEmit  # typecheck admin
 ```
 

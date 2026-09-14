@@ -1,70 +1,49 @@
-# PayInter Mobile (React Native / Expo)
+# PayInter Web App — offline-first PWA
 
-Customer-facing iOS & Android app for PayInter. Dark-first, clean fintech UI with
-rounded cards, subtle gradients and a bottom-tab shell.
+The customer-facing PayInter app: an installable, **offline-first** web app
+(Vite + React SPA) that also packages into an Android APK via Capacitor.
+Dark-first fintech UI, HTTP API contract identical to the backend `/v1`.
 
-## Features
+## Offline architecture (the point of this build)
 
-- **Onboarding**: welcome → 3-step register → 6-digit email OTP → 4-digit transaction PIN
-- **Home**: total USD-equivalent balance hero, per-currency wallets, quick actions,
-  pending-transfer banner, live (sandbox) rates card, recent activity
-- **Payments hub**: P2P send (paytag/email/phone lookup), international transfers
-  (live quote → recipient → purpose → PIN → tracking), QR receive & pay, FX convert
-- **Cards**: tokenized card list, add card (PAN never stored), freeze/unfreeze, card top up flow
-- **Activity**: searchable, typed + status filters, cursor pagination, receipt view with
-  tracking timeline, share receipt, one-tap dispute → support ticket
-- **More**: profile, KYC flow (with explicit sandbox notice), security center
-  (PIN/password change, sessions, biometric hook), legal & notices, support (FAQs + tickets)
-- **Security**: tokens in expo-secure-store, transparent JWT refresh, idempotency keys on
-  every mutating call, biometric confirmation hook (expo-local-authentication)
-
-## Demo (sandbox)
-
-| Credential | Value |
+| Concern | How it works offline |
 |---|---|
-| Email | `demo@payinter.app` |
-| Password | `Demo1234!` |
-| PIN | `2468` |
-| Admin | `admin@payinter.app` / `Admin1234!` |
+| **Boot without network** | Service worker (injectManifest/Workbox) precaches the full app shell; SPA navigation falls back to `index.html`. |
+| **Read data offline** | Every successful API read is snapshotted to **IndexedDB**, namespaced per user (wallet, transactions, cards, recipients, notifications, KYC, tickets, legal docs). Offline reads fall back automatically and the UI shows "offline snapshot · synced HH:MM". |
+| **Operate offline** | Mutations (send, convert, top-ups, QR pay, intl send, tickets, recipients) are persisted to an IndexedDB **outbox** with a unique **Idempotency-Key** per operation. An optimistic entry appears in Activity ("queued · will sync"). |
+| **Re-sync** | Connectivity probes (`/ops/health`, 15 s) + browser `online` events trigger an ordered **flush**. Server idempotency storage makes replays safe; permanent 4xx rejects drop with a toast explanation. Pending count shows in a banner. |
+| **Session offline** | Access/refresh tokens live in localStorage; while unreachable you can "continue offline" against your last snapshot. Token refresh re-runs transparently when the API returns. |
+| **Limits (by design)** | Login/register, OTP issuance, card tokenization, QR *generation* (HMAC signing is server-side) require connectivity and are clearly flagged in the UI. |
 
-Everything here runs against the **sandbox**: simulated FX feed, simulated card processor
-(`4242 4242 4242 4242` → success, `4000 0000 0000 9995` → decline, `4000 0025 0000 3155` → 3DS),
-simulated KYC. The app is clearly badged SANDBOX wherever money-related data is shown.
+## Screens
+
+Onboarding (login/register + offline entry) · Home (total USD, wallets, quick actions, sandbox + offline banners) · Activity (typed filters, search, receipts with timeline, dispute → ticket) · Pay (P2P lookup+send, FX convert) · QR (signed receive codes rendered to canvas, paste-payload pay with tamper rejection) · Add money (card top-up with fee quote, bank instructions, mobile-money prompt) · International (recipients CRUD, all-in quote, send, tracking events) · Cards (tokenize-only, freeze/default) · Notifications · More (KYC, Security: PIN/OTP/sessions, Privacy export, Legal docs, Support + FAQ).
 
 ## Run
 
 ```bash
 cd mobile
-npm install            # or: expo install
-cp .env.example .env   # point EXPO_PUBLIC_API_URL at the backend (LAN IP on device)
-npm start              # Expo dev server; scan QR with Expo Go
+npm install
+npm run dev        # http://localhost:5173 — proxies /v1 + /ops to the API on :4000
+npm run typecheck  # tsc
+npm run build      # → dist-web/ (PWA with precached shell)
+npm run preview    # serves the production build on :5173
 ```
 
-For physical devices, set `EXPO_PUBLIC_API_URL=http://<your-lan-ip>:4000` — `localhost`
-only works in the Android emulator / iOS simulator.
+Baking an API origin into a **production build**: `VITE_API_BASE=https://api.example.com npm run build`.
+In Arena sandboxes the web app auto-discovers the API preview on the same host (`https://4000-<sandbox>.e2b.app`).
 
-## Notes
+## Android APK
 
-- Card entry is **tokenize-first**: the PAN leaves the device straight to a Payment-Method
-  (simulated) endpoint; the app only keeps brand + last4.
-- The PAN/CVV inputs exist purely to demo PCI-journey UX; swap the POST body for a real
-  PSP tokenization SDK (Stripe elements / Adyen) in production.
-- Camera QR scanning is a progressive enhancement around `expo-camera`; pasting a payload
-  works without it.
-- Biometrics are a **hook**: confirm-with-FaceID falls back to the 4-digit PIN.
+`ci/android-apk.yml` (repo root) is a one-command GitHub Actions workflow that
+builds the PWA and wraps it with Capacitor (`npm run build` → `cap add android` →
+`cap sync` → `assembleDebug`). Enable it once inside GitHub (see the header of
+that file) and download the artifact.
 
-## 📲 Instalar no celular
+## Demo credentials (sandbox)
 
-### Opção A — PWA (já funciona agora)
-1. Abra a preview pública no Chrome do Android (ou Safari no iPhone):
-   `https://8080-io1kqve5n5ubr3bk9oibi.e2b.app`
-2. Toque em **"Instalar app" / "Adicionar à tela inicial"**.
-3. Ícone PayInter aparece na tela; abre em tela cheia, com service worker
-   (cache do app shell). Usa a API da preview (sandbox) — demo@payinter.app.
+- User: `demo@payinter.app` / `Demo1234!` · PIN `2468`
+- Admin: `admin@payinter.app` / `Admin1234!`
+- Card simulator: `4242 4242 4242 4242` success · `…9995` decline · `…3155` 3DS review
 
-### Opção B — APK Android nativo (CI)
-O build nativo precisa de rede para baixar Android SDK + dependências Maven
-(esta sandbox só permite npm/github). O workflow completo está pronto em
-`ci/android-apk.yml` — mova-o para `.github/workflows/android-apk.yml` num
-commit (pelo site do GitHub, 60s) e rode **Actions → Build Android APK**.
-O APK sai nos artefatos do run e na release `apk-latest`.
+**Demo money only — no real payments are processed anywhere.**

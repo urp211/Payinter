@@ -1,0 +1,6 @@
+{
+  "appId": "app.payinter.demo",
+  "appName": "PayInter",
+  "webDir": "dist-web",
+  "backgroundColor": "#070B14"
+}
