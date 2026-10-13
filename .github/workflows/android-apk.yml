@@ -1,0 +1,93 @@
+# =============================================================================
+# PayInter Android APK build — GitHub Actions
+#
+# Produces: payinter-debug-apk (artifact) + a GitHub Release "apk-latest".
+#
+# The app is an offline-first PWA (Vite + React). Capacitor wraps the built web
+# bundle into a native Android shell, so the offline-first behaviour (service
+# worker + IndexedDB cache + outbox) works inside the APK too.
+#
+# Trigger: push to the work branch, or Actions -> "Build Android APK" -> Run.
+# =============================================================================
+
+name: Build Android APK
+
+on:
+  push:
+    branches:
+      - arena/44278461-payinter
+    paths:
+      - '.github/workflows/android-apk.yml'
+      - 'mobile/**'
+  workflow_dispatch:
+    inputs:
+      apiUrl:
+        description: 'Backend API URL baked into the APK (HTTPS origin reachable from the phone)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        working-directory: mobile
+        run: npm ci --no-audit --no-fund
+
+      - name: Build the offline-first PWA
+        working-directory: mobile
+        env:
+          VITE_API_BASE: ${{ github.event.inputs.apiUrl || 'https://4000-i422fnjyga662l1ys67f0.e2b.app' }}
+        run: npm run build
+
+      - name: Add Android platform (first run only)
+        working-directory: mobile
+        run: |
+          if [ ! -d android ]; then npx cap add android; fi
+
+      - name: Sync web bundle into the native shell
+        working-directory: mobile
+        run: npx cap sync android
+
+      - name: Build debug APK
+        working-directory: mobile/android
+        run: ./gradlew assembleDebug --no-daemon --console=plain
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: payinter-debug-apk
+          path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Publish APK to release
+        continue-on-error: true
+        run: |
+          cp mobile/android/app/build/outputs/apk/debug/app-debug.apk payinter.apk
+          gh release delete -y apk-latest 2>/dev/null || true
+          gh release create apk-latest payinter.apk \
+            --title "PayInter Android APK (latest)" \
+            --notes "Sandbox demo build. Demo login: demo@payinter.app / Demo1234! / PIN 2468"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
