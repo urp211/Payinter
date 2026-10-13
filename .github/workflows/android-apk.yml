@@ -113,24 +113,77 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Os registos da Actions são servidos por um domínio que o ambiente de
-      # desenvolvimento não alcança. Em caso de falha, os dados essenciais são
-      # publicados numa branch própria (ci-diagnostics) para poderem ser lidos.
+      # Os registos e artefactos da Actions são servidos por domínios que o
+      # ambiente de desenvolvimento não alcança. Por isso, os metadados de
+      # verificação do APK são publicados numa branch própria (ci-diag), de
+      # onde podem ser lidos e conferidos.
+      - name: Publish build metadata
+        if: success()
+        continue-on-error: true
+        run: |
+          APK=mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          BT=$(ls "$SDK/build-tools" | sort -V | tail -1)
+          AAPT="$SDK/build-tools/$BT/aapt2"
+          {
+            echo "# PayInter APK — metadados de construção"
+            echo
+            echo "| Campo | Valor |"
+            echo "|---|---|"
+            echo "| commit | \`${GITHUB_SHA}\` |"
+            echo "| API embutida | \`${API_BASE}\` |"
+            echo "| tamanho | $(stat -c %s "$APK") bytes |"
+            echo "| sha256 | \`$(sha256sum "$APK" | cut -d' ' -f1)\` |"
+            echo
+            echo "## Identificação do pacote (aapt2)"
+            echo '```'
+            if [ -x "$AAPT" ]; then
+              "$AAPT" dump badging "$APK" 2>&1 | head -20
+            else
+              echo "(aapt2 indisponível em build-tools/$BT)"
+            fi
+            echo '```'
+            echo
+            echo "## Conteúdo do APK (início e fim)"
+            echo '```'
+            unzip -l "$APK" | head -22
+            echo "..."
+            unzip -l "$APK" | tail -3
+            echo '```'
+            echo
+            echo "## Confirmação: endereço da API presente no pacote web embutido"
+            echo '```'
+            unzip -p "$APK" 'assets/public/assets/*.js' 2>/dev/null \
+              | grep -o 'https://[0-9]*-[a-z0-9]*\.e2b\.app' | sort -u | head -5 \
+              || echo "(não encontrado)"
+            echo '```'
+          } > /tmp/ci-report.md
+          git config user.email "ci@payinter.local"
+          git config user.name "PayInter CI"
+          git checkout -B ci-diag
+          mkdir -p ci-diag
+          cp /tmp/ci-report.md ci-diag/build-info.md
+          git add -f ci-diag/build-info.md
+          git commit -m "ci: build info ${GITHUB_SHA:0:7}" || true
+          git push -f origin ci-diag || true
+
+      # Em caso de falha, os dados essenciais são publicados na mesma branch
+      # para poderem ser diagnosticados sem acesso aos registos da Actions.
       - name: Publish diagnostics on failure
         if: failure()
         continue-on-error: true
         run: |
           {
-            echo "# PayInter APK build — diagnostics"
+            echo "# PayInter APK — diagnóstico de falha"
             echo
             echo "- data: $(date -u)"
             echo "- commit: ${GITHUB_SHA}"
-            echo "- API_BASE: ${API_BASE}"
+            echo "- API embutida: ${API_BASE}"
             echo "- java: $(java -version 2>&1 | head -1)"
             echo
             echo "## Android SDK"
-            SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
             echo '```'
+            SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
             echo "sdk.dir=$SDK"
             ls "$SDK/platforms" 2>&1 | head -30
             ls "$SDK/build-tools" 2>&1 | head -30
@@ -140,12 +193,12 @@ jobs:
             echo '```'
             tail -200 /tmp/gradle.log 2>&1 || echo "(sem /tmp/gradle.log)"
             echo '```'
-          } > /tmp/diagnostics.md
+          } > /tmp/ci-report.md
           git config user.email "ci@payinter.local"
           git config user.name "PayInter CI"
-          git checkout -B ci-diagnostics
+          git checkout -B ci-diag
           mkdir -p ci-diag
-          cp /tmp/diagnostics.md ci-diag/diagnostics.md
+          cp /tmp/ci-report.md ci-diag/diagnostics.md
           git add -f ci-diag/diagnostics.md
-          git commit -m "ci: build diagnostics (${GITHUB_SHA:0:7})" || true
-          git push -f origin ci-diagnostics || true
+          git commit -m "ci: diagnostics ${GITHUB_SHA:0:7}" || true
+          git push -f origin ci-diag || true
