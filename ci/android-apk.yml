@@ -1,20 +1,31 @@
 # =============================================================================
 # PayInter Android APK build — GitHub Actions
 #
-# HOW TO ENABLE (one-time, ~60 segundos):
-#   1. No GitHub, abra o repo PayInter → Add file → Upload files.
-#   2. Envie ESTE arquivo como `.github/workflows/android-apk.yml`
-#      (a pasta + o nome importam!). Ou: no editor do GitHub, crie o arquivo
-#      `.github/workflows/android-apk.yml` e cole este conteúdo.
-#   3. Commit direto na branch main ou arena/01a038be-payinter.
+# COMO ACTIVAR (uma só vez, ~60 segundos):
+#   1. No GitHub, abra o repositório → Add file → Create new file.
+#   2. No nome do ficheiro escreva exactamente:
+#         .github/workflows/android-apk.yml
+#      (a pasta .github/workflows/ tem de existir; o GitHub cria-a ao digitar
+#       o nome com barras).
+#   3. Cole o conteúdo deste ficheiro (sem as linhas de comentário iniciais,
+#      se preferir) e faça Commit.
 #
-# Depois: Actions → "Build Android APK" → Run workflow.
-# O APK sai como artefato "payinter-debug-apk" e na GitHub Release "apk-latest".
+#   4. Depois: separador "Actions" → "Build Android APK" → "Run workflow".
 #
-# A app é uma PWA (Vite + React, offline-first). O APK embrulha essa webapp com
-# Capacitor — por isso o offline-first funciona também dentro do Android.
-# Nota: com a webview no dispositivo, a API tem de ser pública/HTTPS — defina
-# `apiUrl` quando correr o workflow (opcional em dev: mesmo host da PWA).
+# Resultado: o APK fica disponível como artefacto "payinter-debug-apk" e
+# também na release "apk-latest" do repositório.
+#
+# NOTA IMPORTANTE sobre a API
+#   A aplicação é uma PWA (Vite + React, offline-first). O Capacitor embrulha
+#   o pacote web num contentor Android, por isso o offline-first continua a
+#   funcionar dentro do APK. Mas, à semelhança de qualquer aplicação web
+#   móvel, para falar com o servidor o telemóvel precisa de um URL público.
+#   "localhost" dentro do telemóvel é o próprio telemóvel — não é o servidor.
+#
+#   O valor por omissão de VITE_API_BASE abaixo aponta para o backend do
+#   ambiente de pré-visualização. Assim que o servidor for publicado num
+#   endereço definitivo (HTTPS), altere-o aqui ou indique-o no campo "apiUrl"
+#   ao executar o workflow manualmente.
 # =============================================================================
 
 name: Build Android APK
@@ -23,9 +34,19 @@ on:
   workflow_dispatch:
     inputs:
       apiUrl:
-        description: 'Backend API URL baked into the APK (https origin reachable from the phone)'
+        description: 'Backend API URL baked into the APK (HTTPS origin reachable from the phone)'
         required: false
         default: ''
+  push:
+    branches:
+      - main
+      - 'arena/**'
+    paths:
+      - '.github/workflows/android-apk.yml'
+      - 'mobile/**'
+
+permissions:
+  contents: write
 
 jobs:
   apk:
@@ -56,7 +77,9 @@ jobs:
       - name: Build the offline-first PWA
         working-directory: mobile
         env:
-          VITE_API_BASE: ${{ github.event.inputs.apiUrl }}
+          # Endereço do backend embutido na aplicação. Substitua pelo domínio
+          # definitivo quando o servidor estiver publicado.
+          VITE_API_BASE: ${{ github.event.inputs.apiUrl || 'https://4000-i422fnjyga662l1ys67f0.e2b.app' }}
         run: npm run build
 
       - name: Add Android platform (first run only)
@@ -64,7 +87,7 @@ jobs:
         run: |
           if [ ! -d android ]; then npx cap add android; fi
 
-      - name: Sync web bundle + manifest
+      - name: Sync web bundle into the native shell
         working-directory: mobile
         run: npx cap sync android
 
@@ -79,14 +102,14 @@ jobs:
           path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
-      - name: Attach APK to GitHub Release
+      - name: Publish APK to the "apk-latest" release
+        continue-on-error: true
         run: |
           cp mobile/android/app/build/outputs/apk/debug/app-debug.apk payinter.apk
           gh release delete -y apk-latest 2>/dev/null || true
-          git tag -f apk-latest 2>/dev/null || true
-          git push -f origin apk-latest 2>/dev/null || true
           gh release create apk-latest payinter.apk \
             --title "PayInter Android APK (latest)" \
-            --notes "Sandbox demo build — offline-first PWA wrapped with Capacitor. Backend: ${{ github.event.inputs.apiUrl || '(same-origin)' }}. Demo login: demo@payinter.app / Demo1234! / PIN 2468"
+            --notes "Sandbox demo build — offline-first PWA wrapped with Capacitor.
+          Demo login: demo@payinter.app / Demo1234! / PIN 2468"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
