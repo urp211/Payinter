@@ -1,30 +1,19 @@
-# =============================================================================
-# PayInter Android APK build — GitHub Actions
-#
-# Produces: payinter-debug-apk (artifact) + a GitHub Release "apk-latest".
-#
-# The app is an offline-first PWA (Vite + React). Capacitor wraps the built web
-# bundle into a native Android shell, so the offline-first behaviour (service
-# worker + IndexedDB cache + outbox) works inside the APK too.
-#
-# Trigger: push to the work branch, or Actions -> "Build Android APK" -> Run.
-# =============================================================================
-
 name: Build Android APK
 
 on:
-  push:
-    branches:
-      - arena/44278461-payinter
-    paths:
-      - '.github/workflows/android-apk.yml'
-      - 'mobile/**'
   workflow_dispatch:
     inputs:
       apiUrl:
         description: 'Backend API URL baked into the APK (HTTPS origin reachable from the phone)'
         required: false
         default: ''
+  push:
+    branches:
+      - main
+      - 'arena/**'
+    paths:
+      - '.github/workflows/android-apk.yml'
+      - 'mobile/**'
 
 permissions:
   contents: write
@@ -32,7 +21,10 @@ permissions:
 jobs:
   apk:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
+    env:
+      # Endereço do backend embutido na aplicação.
+      API_BASE: ${{ github.event.inputs.apiUrl || 'https://4000-i422fnjyga662l1ys67f0.e2b.app' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -48,8 +40,20 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # O runner ubuntu-latest já traz o Android SDK instalado
+      # (/usr/local/lib/android/sdk, com android-34 e build-tools 34.0.0).
+      # Por isso NÃO se usa android-actions/setup-android, que era o passo que
+      # falhava. Aqui apenas se confirma o que está disponível.
+      - name: Verify the pre-installed Android SDK
+        run: |
+          set -x
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-<unset>}"
+          ls "$SDK" || true
+          echo "--- platforms ---"; ls "$SDK/platforms" || true
+          echo "--- build-tools ---"; ls "$SDK/build-tools" || true
+          java -version 2>&1 | head -2
 
       - name: Install dependencies
         working-directory: mobile
@@ -58,7 +62,7 @@ jobs:
       - name: Build the offline-first PWA
         working-directory: mobile
         env:
-          VITE_API_BASE: ${{ github.event.inputs.apiUrl || 'https://4000-i422fnjyga662l1ys67f0.e2b.app' }}
+          VITE_API_BASE: ${{ env.API_BASE }}
         run: npm run build
 
       - name: Add Android platform (first run only)
@@ -70,9 +74,26 @@ jobs:
         working-directory: mobile
         run: npx cap sync android
 
+      - name: Point Gradle at the Android SDK
+        working-directory: mobile/android
+        run: |
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          echo "sdk.dir=$SDK" > local.properties
+          cat local.properties
+
       - name: Build debug APK
         working-directory: mobile/android
-        run: ./gradlew assembleDebug --no-daemon --console=plain
+        run: |
+          set -o pipefail
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --no-daemon --console=plain --stacktrace 2>&1 | tee /tmp/gradle.log
+
+      - name: Show APK details
+        continue-on-error: true
+        run: |
+          APK=mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          ls -lh "$APK"
+          echo "sha256: $(sha256sum "$APK" | cut -d' ' -f1)"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -81,13 +102,50 @@ jobs:
           path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
-      - name: Publish APK to release
+      - name: Publish APK to the "apk-latest" release
         continue-on-error: true
         run: |
           cp mobile/android/app/build/outputs/apk/debug/app-debug.apk payinter.apk
           gh release delete -y apk-latest 2>/dev/null || true
           gh release create apk-latest payinter.apk \
             --title "PayInter Android APK (latest)" \
-            --notes "Sandbox demo build. Demo login: demo@payinter.app / Demo1234! / PIN 2468"
+            --notes "Sandbox demo build — offline-first PWA wrapped with Capacitor. API: ${API_BASE}. Demo login: demo@payinter.app / Demo1234! / PIN 2468"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Os registos da Actions são servidos por um domínio que o ambiente de
+      # desenvolvimento não alcança. Em caso de falha, os dados essenciais são
+      # publicados numa branch própria (ci-diagnostics) para poderem ser lidos.
+      - name: Publish diagnostics on failure
+        if: failure()
+        continue-on-error: true
+        run: |
+          {
+            echo "# PayInter APK build — diagnostics"
+            echo
+            echo "- data: $(date -u)"
+            echo "- commit: ${GITHUB_SHA}"
+            echo "- API_BASE: ${API_BASE}"
+            echo "- java: $(java -version 2>&1 | head -1)"
+            echo
+            echo "## Android SDK"
+            SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+            echo '```'
+            echo "sdk.dir=$SDK"
+            ls "$SDK/platforms" 2>&1 | head -30
+            ls "$SDK/build-tools" 2>&1 | head -30
+            echo '```'
+            echo
+            echo "## Gradle (últimas 200 linhas)"
+            echo '```'
+            tail -200 /tmp/gradle.log 2>&1 || echo "(sem /tmp/gradle.log)"
+            echo '```'
+          } > /tmp/diagnostics.md
+          git config user.email "ci@payinter.local"
+          git config user.name "PayInter CI"
+          git checkout -B ci-diagnostics
+          mkdir -p ci-diag
+          cp /tmp/diagnostics.md ci-diag/diagnostics.md
+          git add -f ci-diag/diagnostics.md
+          git commit -m "ci: build diagnostics (${GITHUB_SHA:0:7})" || true
+          git push -f origin ci-diagnostics || true
